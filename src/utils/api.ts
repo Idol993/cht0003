@@ -1,4 +1,4 @@
-import { ApiResponse, LoginRequest, LoginResponse, User, Package, PackageCreateRequest, PackageBatchImportRequest, PackageBatchImportResponse, PickupVerifyRequest, Locker, Reservation, ReservationCreateRequest, StatisticsSummary, TrendData, Company, CompanyStats, Notification, OperationLog, NotificationDelivery, ReturnProcessRequest, PackageReturnQueryParams, NotificationQueryParams, BatchReturnResult } from '../../shared/types';
+import { ApiResponse, LoginRequest, LoginResponse, User, Package, PackageCreateRequest, PackageBatchImportRequest, PackageBatchImportResponse, PickupVerifyRequest, Locker, Reservation, ReservationCreateRequest, StatisticsSummary, TrendData, Company, CompanyStats, Notification, OperationLog, NotificationDelivery, ReturnProcessRequest, PackageReturnQueryParams, NotificationQueryParams, BatchReturnResult, PrecheckResult, ReturnStatsSummary, ReturnStatsByCompany, ReturnStatsByDate, ReturnStatsQuery } from '../../shared/types';
 
 const API_BASE = '/api';
 
@@ -124,6 +124,12 @@ export const packageApi = {
     request<Package>(`/packages/${id}/claim`, {
       method: 'PUT',
     }),
+
+  precheckReturn: (packageIds: number[]) =>
+    request<PrecheckResult>('/packages/return/precheck', {
+      method: 'POST',
+      body: JSON.stringify({ packageIds }),
+    }),
 };
 
 export const lockerApi = {
@@ -212,6 +218,21 @@ export const statisticsApi = {
 
   runExpired: () =>
     request<void>('/statistics/run-expired', { method: 'POST' }),
+
+  getReturnSummary: (params?: ReturnStatsQuery) => {
+    const query = params ? `?${new URLSearchParams(params as any).toString()}` : '';
+    return request<ReturnStatsSummary>(`/statistics/return/summary${query}`);
+  },
+
+  getReturnByCompany: (params?: ReturnStatsQuery) => {
+    const query = params ? `?${new URLSearchParams(params as any).toString()}` : '';
+    return request<ReturnStatsByCompany[]>(`/statistics/return/by-company${query}`);
+  },
+
+  getReturnByDate: (params?: ReturnStatsQuery) => {
+    const query = params ? `?${new URLSearchParams(params as any).toString()}` : '';
+    return request<ReturnStatsByDate[]>(`/statistics/return/by-date${query}`);
+  },
 };
 
 export const userApi = {

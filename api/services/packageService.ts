@@ -9,6 +9,13 @@ import {
   OperationLog,
   PackageReturnQueryParams,
   ReturnProcessRequest,
+  ReturnReason,
+  PrecheckResult,
+  ReturnNotificationStatus,
+  ReturnStatsQuery,
+  ReturnStatsSummary,
+  ReturnStatsByCompany,
+  ReturnStatsByDate,
 } from '../../shared/types';
 import { generateUniquePickupCode, validatePickupCode } from './pickupCodeService';
 import { getAvailableLocker, updateLockerStatus } from './lockerService';
@@ -35,6 +42,13 @@ interface PackageDb {
   locker_code: string;
   locker_zone: string;
   courier_name: string;
+  return_reason?: string;
+  return_evidence?: string;
+  return_remark?: string;
+  returned_by?: number;
+  returned_at?: string;
+  return_notification_sent?: number;
+  returned_by_name?: string;
 }
 
 const MIN_RETURN_DAYS = 7;
@@ -46,24 +60,25 @@ function getReturnDays(storedAtStr: string): number {
   return Math.floor(diffHours / 24);
 }
 
-function isPackageEligibleForReturn(dbPkg: PackageDb): { eligible: boolean; reason?: string; days: number } {
+function isPackageEligibleForReturn(dbPkg: PackageDb): { eligible: boolean; reason?: string; days: number; returnNotificationSent: boolean } {
   const days = getReturnDays(dbPkg.stored_at);
   const pkgStatus = dbPkg.status as string;
+  const returnNotificationSent = !!dbPkg.return_notification_sent;
 
   if (pkgStatus === 'expired') {
-    return { eligible: true, days };
+    return { eligible: true, days, returnNotificationSent };
   }
 
   if (pkgStatus === 'pending' && days >= MIN_RETURN_DAYS) {
-    return { eligible: true, days };
+    return { eligible: true, days, returnNotificationSent };
   }
 
   if (pkgStatus !== 'pending' && pkgStatus !== 'expired') {
-    return { eligible: false, reason: `包裹状态为${dbPkg.status}，不允许退回`, days };
+    return { eligible: false, reason: `包裹状态为${dbPkg.status}，不允许退回`, days, returnNotificationSent };
   }
 
   const remainingDays = MIN_RETURN_DAYS - days;
-  return { eligible: false, reason: `存放仅${days}天，未满${MIN_RETURN_DAYS}天（还需${remainingDays}天），暂不可退回`, days };
+  return { eligible: false, reason: `存放仅${days}天，未满${MIN_RETURN_DAYS}天（还需${remainingDays}天），暂不可退回`, days, returnNotificationSent };
 }
 
 function mapPackage(dbPkg: PackageDb): Package {
@@ -98,6 +113,13 @@ function mapPackage(dbPkg: PackageDb): Package {
     deliveryStatus: dbPkg.delivery_status as any,
     conflictCount: dbPkg.conflict_count || 0,
     matchedUserIds: dbPkg.matched_user_ids ? dbPkg.matched_user_ids.split(',').map(Number) : undefined,
+    returnReason: dbPkg.return_reason,
+    returnEvidence: dbPkg.return_evidence,
+    returnRemark: dbPkg.return_remark,
+    returnedBy: dbPkg.returned_by,
+    returnedByName: dbPkg.returned_by_name,
+    returnedAt: dbPkg.returned_at,
+    returnNotificationSent: !!dbPkg.return_notification_sent,
   };
 }
 
@@ -107,11 +129,13 @@ const baseQuery = `
     c.name as company_name,
     l.code as locker_code,
     l.zone as locker_zone,
-    u.name as courier_name
+    u.name as courier_name,
+    u2.name as returned_by_name
   FROM packages p
   LEFT JOIN companies c ON p.company_id = c.id
   LEFT JOIN lockers l ON p.locker_id = l.id
   LEFT JOIN users u ON p.courier_id = u.id
+  LEFT JOIN users u2 ON p.returned_by = u2.id
 `;
 
 export async function createPackage(
@@ -359,7 +383,7 @@ export async function getReturnList(
   const sqlParams: any[] = [];
 
   whereConditions.push(`(
-    (p.status = ? AND julianday('now') - julianday(p.stored_at) >= ?) 
+    (p.status = ? AND CAST(julianday('now') - julianday(p.stored_at) AS INTEGER) >= ?) 
     OR p.status = ?
   )`);
   sqlParams.push('pending', MIN_RETURN_DAYS, 'expired');
@@ -382,12 +406,27 @@ export async function getReturnList(
   const minDays = params.minOverdueDays !== undefined 
     ? Math.max(params.minOverdueDays, MIN_RETURN_DAYS) 
     : MIN_RETURN_DAYS;
-  whereConditions.push("julianday('now') - julianday(p.stored_at) >= ?");
-  sqlParams.push(minDays);
 
   if (params.maxOverdueDays !== undefined) {
-    whereConditions.push("julianday('now') - julianday(p.stored_at) <= ?");
-    sqlParams.push(params.maxOverdueDays);
+    whereConditions.push("CAST(julianday('now') - julianday(p.stored_at) AS INTEGER) >= ?");
+    whereConditions.push("CAST(julianday('now') - julianday(p.stored_at) AS INTEGER) <= ?");
+    sqlParams.push(minDays, params.maxOverdueDays);
+  } else {
+    whereConditions.push("CAST(julianday('now') - julianday(p.stored_at) AS INTEGER) >= ?");
+    sqlParams.push(minDays);
+  }
+
+  if (params.returnNotificationStatus) {
+    if (params.returnNotificationStatus === 'not_sent') {
+      whereConditions.push('(p.return_notification_sent = 0 OR p.return_notification_sent IS NULL)');
+    } else if (params.returnNotificationStatus === 'sent') {
+      whereConditions.push('p.return_notification_sent = 1');
+    }
+  }
+
+  if (params.trackingNo) {
+    whereConditions.push('p.tracking_no LIKE ?');
+    sqlParams.push('%' + params.trackingNo + '%');
   }
 
   sql += ' WHERE ' + whereConditions.join(' AND ');
@@ -397,7 +436,7 @@ export async function getReturnList(
   return packages.map(mapPackage);
 }
 
-export async function markAsReturned(packageId: number, operatorId: number, operatorName: string, operatorRole: UserRole, operatorCompanyId?: number, remark?: string): Promise<Package> {
+export async function markAsReturned(packageId: number, operatorId: number, operatorName: string, operatorRole: UserRole, operatorCompanyId?: number, remark?: string, reason?: ReturnReason, evidence?: string): Promise<Package> {
   const sql = baseQuery + ' WHERE p.id = ?';
   const dbPkg = await queryOne<PackageDb>(sql, [packageId]);
   if (!dbPkg) {
@@ -419,8 +458,15 @@ export async function markAsReturned(packageId: number, operatorId: number, oper
 
   await executeTransaction(async () => {
     await execute(
-      'UPDATE packages SET status = ? WHERE id = ?',
-      ['returned', packageId]
+      `UPDATE packages SET 
+        status = ?,
+        return_reason = ?,
+        return_evidence = ?,
+        return_remark = ?,
+        returned_by = ?,
+        returned_at = CURRENT_TIMESTAMP
+      WHERE id = ?`,
+      ['returned', reason || null, evidence || null, remark || null, operatorId, packageId]
     );
 
     await execute(
@@ -428,8 +474,16 @@ export async function markAsReturned(packageId: number, operatorId: number, oper
       ['available', dbPkg.locker_id]
     );
 
-    const logRemark = remark || '包裹已退回';
-    await addOperationLog(packageId, 'return', operatorId, operatorName, logRemark);
+    const logParts: string[] = [];
+    if (reason) {
+      logParts.push(`原因:${reason}`);
+    }
+    if (remark) {
+      logParts.push(`备注:${remark}`);
+    }
+    const logRemark = logParts.length > 0 ? logParts.join(' | ') : '包裹已退回';
+    const logDetail = { reason, evidence, remark };
+    await addOperationLog(packageId, 'return', operatorId, operatorName, logRemark, logDetail);
   });
 
   updatedPkg = await getPackageById(packageId);
@@ -454,7 +508,9 @@ export async function processReturnBatch(
   operatorName: string,
   operatorRole: UserRole,
   operatorCompanyId?: number,
-  remark?: string
+  remark?: string,
+  reason?: ReturnReason,
+  evidence?: string
 ): Promise<BatchReturnResult> {
   const uniqueIds = [...new Set(packageIds)];
   
@@ -482,7 +538,9 @@ export async function processReturnBatch(
         operatorName,
         operatorRole,
         operatorCompanyId,
-        remark
+        remark,
+        reason,
+        evidence
       );
       
       result.success++;
@@ -537,13 +595,15 @@ export async function addOperationLog(
   action: OperationLog['action'],
   operatorId?: number,
   operatorName?: string,
-  remark?: string
+  remark?: string,
+  detail?: any
 ): Promise<void> {
   const sql = `
-    INSERT INTO operation_logs (package_id, action, operator_id, operator_name, remark)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO operation_logs (package_id, action, operator_id, operator_name, remark, detail)
+    VALUES (?, ?, ?, ?, ?, ?)
   `;
-  await execute(sql, [packageId, action, operatorId || null, operatorName || null, remark || '']);
+  const detailStr = detail ? JSON.stringify(detail) : null;
+  await execute(sql, [packageId, action, operatorId || null, operatorName || null, remark || '', detailStr]);
 }
 
 export async function getPackageOperationLogs(packageId: number): Promise<OperationLog[]> {
@@ -581,4 +641,313 @@ export async function getExpiredPackages(): Promise<Package[]> {
   `;
   const packages = await queryMany<PackageDb>(sql);
   return packages.map(mapPackage);
+}
+
+export async function precheckReturn(
+  packageIds: number[],
+  operatorRole: UserRole,
+  operatorCompanyId?: number
+): Promise<PrecheckResult> {
+  const uniqueIds = [...new Set(packageIds)];
+  const result: PrecheckResult = {
+    total: uniqueIds.length,
+    eligibleCount: 0,
+    ineligibleCount: 0,
+    eligible: [],
+    ineligible: [],
+  };
+
+  for (const id of uniqueIds) {
+    try {
+      const sql = baseQuery + ' WHERE p.id = ?';
+      const dbPkg = await queryOne<PackageDb>(sql, [id]);
+
+      if (!dbPkg) {
+        result.ineligibleCount++;
+        result.ineligible.push({ id, error: '包裹不存在' });
+        continue;
+      }
+
+      if (operatorRole === 'courier' && operatorCompanyId !== undefined) {
+        if (dbPkg.company_id !== operatorCompanyId) {
+          result.ineligibleCount++;
+          result.ineligible.push({
+            id,
+            trackingNumber: dbPkg.tracking_no,
+            error: `不属于您所在的快递公司`,
+          });
+          continue;
+        }
+      }
+
+      const eligibility = isPackageEligibleForReturn(dbPkg);
+      if (!eligibility.eligible) {
+        result.ineligibleCount++;
+        result.ineligible.push({
+          id,
+          trackingNumber: dbPkg.tracking_no,
+          error: eligibility.reason || '不符合退回条件',
+        });
+        continue;
+      }
+
+      result.eligibleCount++;
+      result.eligible.push({
+        id: dbPkg.id,
+        trackingNumber: dbPkg.tracking_no,
+        companyName: dbPkg.company_name,
+        overdueDays: eligibility.days,
+        lockerZone: dbPkg.locker_zone,
+        lockerCode: dbPkg.locker_code,
+      });
+    } catch (error: any) {
+      result.ineligibleCount++;
+      result.ineligible.push({
+        id,
+        error: error.message || '检查失败',
+      });
+    }
+  }
+
+  return result;
+}
+
+export async function precheckReturnPackages(
+  packageIds: number[],
+  operatorRole: UserRole,
+  operatorCompanyId?: number
+): Promise<PrecheckResult> {
+  return precheckReturn(packageIds, operatorRole, operatorCompanyId);
+}
+
+function buildReturnStatsWhere(
+  query: ReturnStatsQuery,
+  role: UserRole,
+  userCompanyId?: number,
+  dateField: string = 'stored_at'
+): { conditions: string[]; params: any[] } {
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (role === 'courier' && userCompanyId) {
+    conditions.push('p.company_id = ?');
+    params.push(userCompanyId);
+  } else if (query.companyId) {
+    conditions.push('p.company_id = ?');
+    params.push(query.companyId);
+  }
+
+  if (query.startDate) {
+    conditions.push(`DATE(p.${dateField}) >= ?`);
+    params.push(query.startDate);
+  }
+  if (query.endDate) {
+    conditions.push(`DATE(p.${dateField}) <= ?`);
+    params.push(query.endDate);
+  }
+
+  return { conditions, params };
+}
+
+export async function getReturnStatsSummary(
+  query: ReturnStatsQuery,
+  role: UserRole,
+  userCompanyId?: number
+): Promise<ReturnStatsSummary> {
+  const pendingConditions: string[] = ['1=1'];
+  const pendingParams: any[] = [];
+
+  if (role === 'courier' && userCompanyId) {
+    pendingConditions.push('p.company_id = ?');
+    pendingParams.push(userCompanyId);
+  } else if (query.companyId) {
+    pendingConditions.push('p.company_id = ?');
+    pendingParams.push(query.companyId);
+  }
+
+  pendingConditions.push("p.status IN ('pending', 'expired')");
+  pendingConditions.push(`CAST(julianday('now') - julianday(p.stored_at) AS INTEGER) >= ${MIN_RETURN_DAYS}`);
+
+  const pendingWhere = ' WHERE ' + pendingConditions.join(' AND ');
+
+  const pendingSql = `
+    SELECT COUNT(*) as cnt FROM packages p
+    ${pendingWhere}
+  `;
+  const pendingResult = await queryOne<{ cnt: number }>(pendingSql, pendingParams);
+  const totalPending = pendingResult?.cnt || 0;
+
+  const { conditions: returnedConditions, params: returnedParams } = buildReturnStatsWhere(query, role, userCompanyId, 'returned_at');
+  returnedConditions.push("p.status = 'returned'");
+  const returnedWhere = ' WHERE ' + returnedConditions.join(' AND ');
+
+  const returnedSql = `
+    SELECT COUNT(*) as cnt FROM packages p
+    ${returnedWhere}
+  `;
+  const returnedResult = await queryOne<{ cnt: number }>(returnedSql, returnedParams);
+  const totalReturned = returnedResult?.cnt || 0;
+
+  const logConditions: string[] = ["action = 'return'"];
+  const logParams: any[] = [];
+
+  if (query.startDate) {
+    logConditions.push("DATE(created_at) >= ?");
+    logParams.push(query.startDate);
+  }
+  if (query.endDate) {
+    logConditions.push("DATE(created_at) <= ?");
+    logParams.push(query.endDate);
+  }
+
+  const logWhere = ' WHERE ' + logConditions.join(' AND ');
+
+  const batchTotalSql = `
+    SELECT COUNT(*) as cnt FROM operation_logs
+    ${logWhere}
+  `;
+  const batchTotalResult = await queryOne<{ cnt: number }>(batchTotalSql, logParams);
+  const batchTotal = batchTotalResult?.cnt || 0;
+
+  const batchSuccess = totalReturned;
+  const batchSuccessRate = batchTotal > 0 ? Math.round((batchSuccess / batchTotal) * 100) : 0;
+
+  const reasonConditions = [...returnedConditions, "p.return_reason IS NOT NULL"];
+  const reasonWhere = ' WHERE ' + reasonConditions.join(' AND ');
+  const reasonsSql = `
+    SELECT p.return_reason as reason, COUNT(*) as cnt
+    FROM packages p
+    ${reasonWhere}
+    GROUP BY p.return_reason
+    ORDER BY cnt DESC
+    LIMIT 10
+  `;
+  const reasonsResult = await queryMany<{ reason: string; cnt: number }>(reasonsSql, returnedParams);
+  const commonFailReasons = reasonsResult.map(r => ({ reason: r.reason, count: r.cnt }));
+
+  return {
+    totalPending,
+    totalReturned,
+    batchTotal,
+    batchSuccess,
+    batchSuccessRate,
+    commonFailReasons,
+  };
+}
+
+export async function getReturnStatsByCompany(
+  query: ReturnStatsQuery,
+  role: UserRole,
+  userCompanyId?: number
+): Promise<ReturnStatsByCompany[]> {
+  const companyConditions: string[] = [];
+  const companyParams: any[] = [];
+
+  if (role === 'courier' && userCompanyId) {
+    companyConditions.push('c.id = ?');
+    companyParams.push(userCompanyId);
+  } else if (query.companyId) {
+    companyConditions.push('c.id = ?');
+    companyParams.push(query.companyId);
+  }
+
+  const companyAnd = companyConditions.length > 0 ? ' AND ' + companyConditions.join(' AND ') : '';
+
+  const returnedConditions: string[] = ["p.status = 'returned'"];
+  const returnedParams: any[] = [];
+
+  if (role === 'courier' && userCompanyId) {
+    returnedConditions.push('p.company_id = ?');
+    returnedParams.push(userCompanyId);
+  } else if (query.companyId) {
+    returnedConditions.push('p.company_id = ?');
+    returnedParams.push(query.companyId);
+  }
+
+  if (query.startDate) {
+    returnedConditions.push("DATE(p.returned_at) >= ?");
+    returnedParams.push(query.startDate);
+  }
+  if (query.endDate) {
+    returnedConditions.push("DATE(p.returned_at) <= ?");
+    returnedParams.push(query.endDate);
+  }
+
+  const returnedAnd = returnedConditions.length > 0 ? ' AND ' + returnedConditions.join(' AND ') : '';
+
+  const sql = `
+    SELECT 
+      c.id as company_id,
+      c.name as company_name,
+      SUM(CASE WHEN p.status IN ('pending', 'expired') AND CAST(julianday('now') - julianday(p.stored_at) AS INTEGER) >= ${MIN_RETURN_DAYS} THEN 1 ELSE 0 END) as pending,
+      (SELECT COUNT(*) FROM packages p2 WHERE p2.company_id = c.id ${returnedAnd}) as returned
+    FROM companies c
+    LEFT JOIN packages p ON p.company_id = c.id
+    WHERE 1=1 ${companyAnd}
+    GROUP BY c.id, c.name
+    ORDER BY returned DESC, pending DESC
+  `;
+
+  const params = [...companyParams, ...returnedParams];
+  const rows = await queryMany<{ company_id: number; company_name: string; pending: number; returned: number }>(sql, params);
+  return rows.map(r => {
+    const total = r.pending + r.returned;
+    const successRate = total > 0 ? Math.round((r.returned / total) * 100) : 0;
+    return {
+      companyId: r.company_id,
+      companyName: r.company_name,
+      pending: r.pending,
+      returned: r.returned,
+      successRate,
+    };
+  });
+}
+
+export async function getReturnStatsByDate(
+  query: ReturnStatsQuery,
+  role: UserRole,
+  userCompanyId?: number
+): Promise<ReturnStatsByDate[]> {
+  const conditions: string[] = ["p.status = 'returned'"];
+  const params: any[] = [];
+
+  if (role === 'courier' && userCompanyId) {
+    conditions.push('p.company_id = ?');
+    params.push(userCompanyId);
+  } else if (query.companyId) {
+    conditions.push('p.company_id = ?');
+    params.push(query.companyId);
+  }
+
+  conditions.push("DATE(p.returned_at) >= DATE('now', '-14 days')");
+
+  if (query.startDate) {
+    conditions.push("DATE(p.returned_at) >= ?");
+    params.push(query.startDate);
+  }
+  if (query.endDate) {
+    conditions.push("DATE(p.returned_at) <= ?");
+    params.push(query.endDate);
+  }
+
+  const whereSql = ' WHERE ' + conditions.join(' AND ');
+
+  const sql = `
+    SELECT 
+      DATE(p.returned_at) as date,
+      0 as pending,
+      COUNT(*) as returned
+    FROM packages p
+    ${whereSql}
+    GROUP BY DATE(p.returned_at)
+    ORDER BY date DESC
+    LIMIT 14
+  `;
+
+  const rows = await queryMany<{ date: string; pending: number; returned: number }>(sql, params);
+  return rows.map(r => ({
+    date: r.date,
+    pending: r.pending,
+    returned: r.returned,
+  }));
 }

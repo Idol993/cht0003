@@ -12,9 +12,10 @@ import {
   getReturnList,
   processReturnBatch,
   claimPackage,
+  precheckReturnPackages,
 } from '../services/packageService';
 import { getDeliveriesByPackageId } from '../services/notificationService';
-import { PackageCreateRequest, PackageBatchImportRequest, PickupVerifyRequest, PackageStatus, PackageReturnQueryParams, ReturnProcessRequest } from '../../shared/types';
+import { PackageCreateRequest, PackageBatchImportRequest, PickupVerifyRequest, PackageStatus, PackageReturnQueryParams, ReturnProcessRequest, ReturnNotificationStatus, ReturnReason } from '../../shared/types';
 import { getCurrentUser } from '../services/authService';
 
 const router = Router();
@@ -128,13 +129,15 @@ router.get('/returns', requireCourierOrAdmin, async (req: AuthRequest, res) => {
   try {
     const user = await getCurrentUser(req.user!.id);
     
-    const { companyId, minOverdueDays, maxOverdueDays, zone } = req.query;
+    const { companyId, minOverdueDays, maxOverdueDays, zone, returnNotificationStatus, trackingNo } = req.query;
     
     const params: PackageReturnQueryParams = {
       companyId: companyId ? parseInt(companyId as string) : undefined,
       minOverdueDays: minOverdueDays !== undefined ? parseInt(minOverdueDays as string) : undefined,
       maxOverdueDays: maxOverdueDays !== undefined ? parseInt(maxOverdueDays as string) : undefined,
       zone: zone as string | undefined,
+      returnNotificationStatus: returnNotificationStatus as ReturnNotificationStatus | undefined,
+      trackingNo: trackingNo as string | undefined,
     };
 
     const packages = await getReturnList(params, user.role, user.companyId);
@@ -142,6 +145,32 @@ router.get('/returns', requireCourierOrAdmin, async (req: AuthRequest, res) => {
     res.json({
       success: true,
       data: packages,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+router.post('/return/precheck', requireCourierOrAdmin, async (req: AuthRequest, res) => {
+  try {
+    const user = await getCurrentUser(req.user!.id);
+    const { packageIds } = req.body as { packageIds: number[] };
+
+    if (!packageIds || packageIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '请选择要预检的包裹',
+      });
+    }
+
+    const result = await precheckReturnPackages(packageIds, user.role, user.companyId);
+
+    res.json({
+      success: true,
+      data: result,
     });
   } catch (error: any) {
     res.status(400).json({
@@ -169,7 +198,9 @@ router.post('/return/batch', requireCourierOrAdmin, async (req: AuthRequest, res
       user.name,
       user.role,
       user.companyId,
-      body.remark
+      body.remark,
+      body.reason,
+      body.evidence
     );
 
     res.json({
@@ -339,7 +370,7 @@ router.put('/:id/return', requireCourierOrAdmin, async (req: AuthRequest, res) =
   try {
     const { id } = req.params;
     const user = await getCurrentUser(req.user!.id);
-    const { remark } = req.body as { remark?: string };
+    const { remark, reason, evidence } = req.body as { remark?: string; reason?: ReturnReason; evidence?: string };
 
     const updatedPkg = await markAsReturned(
       parseInt(id),
@@ -347,7 +378,9 @@ router.put('/:id/return', requireCourierOrAdmin, async (req: AuthRequest, res) =
       user.name,
       user.role,
       user.companyId,
-      remark
+      remark,
+      reason,
+      evidence
     );
 
     res.json({

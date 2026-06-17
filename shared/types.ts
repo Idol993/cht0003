@@ -12,7 +12,7 @@ export type ReservationSize = 'medium' | 'large' | 'xlarge';
 
 export type NotificationType = 'pickup' | 'reminder' | 'return' | 'reservation' | 'system' | 'claim';
 
-export type OperationAction = 'store' | 'pickup' | 'reminder' | 'return' | 'expire';
+export type OperationAction = 'store' | 'pickup' | 'reminder' | 'return' | 'expire' | 'return_precheck' | 'claim' | 'return_notify';
 
 export type DeliveryStatus = 'pending' | 'delivered' | 'conflict' | 'claimed';
 
@@ -71,6 +71,13 @@ export interface Package {
   deliveryStatus: DeliveryStatus;
   conflictCount: number;
   matchedUserIds?: number[];
+  returnReason?: string;
+  returnEvidence?: string;
+  returnRemark?: string;
+  returnedBy?: number;
+  returnedByName?: string;
+  returnedAt?: string;
+  returnNotificationSent: boolean;
 }
 
 export interface Reservation {
@@ -193,11 +200,6 @@ export interface PickupVerifyRequest {
   pickupCode: string;
 }
 
-export interface ReturnProcessRequest {
-  packageIds: number[];
-  remark?: string;
-}
-
 export interface NotificationQueryParams {
   type?: NotificationType;
   unreadOnly?: boolean;
@@ -226,6 +228,79 @@ export interface BatchReturnResult {
   errors: string[];
   successItems: { id: number; trackingNumber: string }[];
   failedItems: { id: number; trackingNumber?: string; error: string }[];
+}
+
+export type ReturnReason =
+  | 'user_request'
+  | 'expired_7d'
+  | 'address_error'
+  | 'damaged'
+  | 'refused_by_recipient'
+  | 'other';
+
+export const RETURN_REASON_OPTIONS: { value: ReturnReason; label: string }[] = [
+  { value: 'user_request', label: '收件人要求退回' },
+  { value: 'expired_7d', label: '存放满7天未取件' },
+  { value: 'address_error', label: '地址/联系方式错误' },
+  { value: 'damaged', label: '包裹破损' },
+  { value: 'refused_by_recipient', label: '收件人拒收' },
+  { value: 'other', label: '其他原因' },
+];
+
+export interface ReturnProcessRequest {
+  packageIds: number[];
+  reason?: ReturnReason;
+  evidence?: string;
+  remark?: string;
+}
+
+export interface PrecheckResult {
+  total: number;
+  eligibleCount: number;
+  ineligibleCount: number;
+  eligible: { id: number; trackingNumber: string; companyName: string; overdueDays: number; lockerZone: string; lockerCode: string }[];
+  ineligible: { id: number; trackingNumber?: string; error: string }[];
+}
+
+export type ReturnNotificationStatus = 'not_sent' | 'sent' | 'all';
+
+export interface ReturnStatsQuery {
+  startDate?: string;
+  endDate?: string;
+  companyId?: number;
+}
+
+export interface ReturnStatsSummary {
+  totalPending: number;
+  totalReturned: number;
+  batchTotal: number;
+  batchSuccess: number;
+  batchSuccessRate: number;
+  commonFailReasons: { reason: string; count: number }[];
+}
+
+export interface ReturnStatsByCompany {
+  companyId: number;
+  companyName: string;
+  pending: number;
+  returned: number;
+  successRate: number;
+}
+
+export interface ReturnStatsByDate {
+  date: string;
+  pending: number;
+  returned: number;
+}
+
+export interface PackageReturnQueryParams {
+  companyId?: number;
+  minOverdueDays?: number;
+  maxOverdueDays?: number;
+  zone?: string;
+  status?: PackageStatus;
+  returnNotificationStatus?: ReturnNotificationStatus;
+  trackingNo?: string;
 }
 
 export interface ReservationCreateRequest {

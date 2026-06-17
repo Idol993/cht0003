@@ -87,6 +87,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         { path: '/packages/storage', icon: Inbox, label: '入库管理' },
         { path: '/packages', icon: Package, label: '包裹查询' },
         { path: '/packages/returns', icon: RotateCcw, label: '退回处理' },
+        { path: '/statistics/return', icon: BarChart3, label: '退回统计' },
         { path: '/lockers', icon: MapPin, label: '格口状态' },
         { path: '/notifications', icon: Mail, label: '消息通知' },
       ];
@@ -98,6 +99,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         { path: '/packages/storage', icon: Inbox, label: '入库管理' },
         { path: '/packages', icon: Package, label: '包裹管理' },
         { path: '/packages/returns', icon: RotateCcw, label: '退回处理' },
+        { path: '/statistics/return', icon: BarChart3, label: '退回统计' },
         { path: '/pickup', icon: QrCode, label: '取件核验' },
         { path: '/reservations', icon: Calendar, label: '预约管理' },
         { path: '/lockers', icon: MapPin, label: '格口管理' },

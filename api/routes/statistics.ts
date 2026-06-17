@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { authMiddleware } from '../middleware/auth';
-import { requireAdmin } from '../middleware/permission';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { requireAdmin, requireCourierOrAdmin } from '../middleware/permission';
 import {
   getStatisticsSummary,
   getTrendData,
@@ -10,6 +10,13 @@ import {
   getZoneDistribution,
 } from '../services/statisticsService';
 import {
+  getReturnStatsSummary,
+  getReturnStatsByCompany,
+  getReturnStatsByDate,
+} from '../services/packageService';
+import { ReturnStatsQuery } from '../../shared/types';
+import { getCurrentUser } from '../services/authService';
+import {
   runOverdueRemindersManually,
   runExpiredNotificationsManually,
 } from '../services/cronService';
@@ -17,6 +24,79 @@ import {
 const router = Router();
 
 router.use(authMiddleware);
+
+router.get('/return/summary', requireCourierOrAdmin, async (req: AuthRequest, res) => {
+  try {
+    const user = await getCurrentUser(req.user!.id);
+    const { startDate, endDate, companyId } = req.query;
+
+    const params: ReturnStatsQuery = {
+      startDate: startDate as string | undefined,
+      endDate: endDate as string | undefined,
+      companyId: companyId ? parseInt(companyId as string) : undefined,
+    };
+
+    const summary = await getReturnStatsSummary(params, user.role, user.companyId);
+    res.json({
+      success: true,
+      data: summary,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+router.get('/return/by-company', requireCourierOrAdmin, async (req: AuthRequest, res) => {
+  try {
+    const user = await getCurrentUser(req.user!.id);
+    const { startDate, endDate, companyId } = req.query;
+
+    const params: ReturnStatsQuery = {
+      startDate: startDate as string | undefined,
+      endDate: endDate as string | undefined,
+      companyId: companyId ? parseInt(companyId as string) : undefined,
+    };
+
+    const stats = await getReturnStatsByCompany(params, user.role, user.companyId);
+    res.json({
+      success: true,
+      data: stats,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+router.get('/return/by-date', requireCourierOrAdmin, async (req: AuthRequest, res) => {
+  try {
+    const user = await getCurrentUser(req.user!.id);
+    const { startDate, endDate, companyId } = req.query;
+
+    const params: ReturnStatsQuery = {
+      startDate: startDate as string | undefined,
+      endDate: endDate as string | undefined,
+      companyId: companyId ? parseInt(companyId as string) : undefined,
+    };
+
+    const stats = await getReturnStatsByDate(params, user.role, user.companyId);
+    res.json({
+      success: true,
+      data: stats,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
 router.use(requireAdmin);
 
 router.get('/summary', async (req, res) => {

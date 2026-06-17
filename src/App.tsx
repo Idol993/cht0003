@@ -18,6 +18,7 @@ import Pickup from './pages/Pickup';
 import Reservations from './pages/Reservations';
 import Lockers from './pages/Lockers';
 import Statistics from './pages/Statistics';
+import ReturnStatistics from './pages/ReturnStatistics';
 import Users from './pages/Users';
 import Notifications from './pages/Notifications';
 import Returns from './pages/Returns';
@@ -153,6 +154,15 @@ const AppContent: React.FC = () => {
         element={
           <ProtectedRoute allowedRoles={['courier', 'admin']}>
             <Lockers />
+          </ProtectedRoute>
+        }
+      />
+      
+      <Route
+        path="/statistics/return"
+        element={
+          <ProtectedRoute allowedRoles={['courier', 'admin']}>
+            <ReturnStatistics />
           </ProtectedRoute>
         }
       />

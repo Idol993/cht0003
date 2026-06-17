@@ -37,9 +37,16 @@ CREATE TABLE packages (
   delivery_status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (delivery_status IN ('pending', 'delivered', 'conflict', 'claimed')),
   conflict_count INTEGER DEFAULT 0,
   matched_user_ids TEXT,
+  return_reason VARCHAR(100),
+  return_evidence TEXT,
+  return_remark TEXT,
+  returned_by INTEGER,
+  returned_at DATETIME,
+  return_notification_sent BOOLEAN DEFAULT 0,
   FOREIGN KEY (company_id) REFERENCES companies(id),
   FOREIGN KEY (courier_id) REFERENCES users(id),
-  FOREIGN KEY (resident_id) REFERENCES users(id)
+  FOREIGN KEY (resident_id) REFERENCES users(id),
+  FOREIGN KEY (returned_by) REFERENCES users(id)
 );
 
 -- 格口表
@@ -71,9 +78,10 @@ CREATE TABLE reservations (
 CREATE TABLE operation_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   package_id INTEGER NOT NULL,
-  action VARCHAR(20) NOT NULL CHECK (action IN ('store', 'pickup', 'reminder', 'return', 'expire')),
+  action VARCHAR(20) NOT NULL CHECK (action IN ('store', 'pickup', 'reminder', 'return', 'expire', 'return_precheck', 'claim', 'return_notify')),
   operator_id INTEGER,
   remark TEXT,
+  detail TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (package_id) REFERENCES packages(id),
   FOREIGN KEY (operator_id) REFERENCES users(id)
@@ -118,12 +126,15 @@ CREATE INDEX idx_packages_stored_at ON packages(stored_at);
 CREATE INDEX idx_packages_courier_id ON packages(courier_id);
 CREATE INDEX idx_packages_phone_suffix ON packages(phone_suffix);
 CREATE INDEX idx_packages_delivery_status ON packages(delivery_status);
+CREATE INDEX idx_packages_returned ON packages(status, stored_at);
+CREATE INDEX idx_packages_returned_by ON packages(returned_by, returned_at);
 CREATE INDEX idx_notifications_user_id ON notifications(user_id, read);
 CREATE INDEX idx_notifications_package_id ON notifications(package_id);
 CREATE INDEX idx_notification_deliveries_package ON notification_deliveries(package_id);
 CREATE INDEX idx_notification_deliveries_type ON notification_deliveries(notification_type);
 CREATE INDEX idx_notification_deliveries_status ON notification_deliveries(status);
 CREATE INDEX idx_operation_logs_package_id ON operation_logs(package_id);
+CREATE INDEX idx_operation_logs_action ON operation_logs(action, created_at);
 CREATE INDEX idx_reservations_resident_id ON reservations(resident_id);
 
 -- 初始化数据
