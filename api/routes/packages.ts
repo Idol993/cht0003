@@ -163,7 +163,14 @@ router.post('/return/batch', requireCourierOrAdmin, async (req: AuthRequest, res
       });
     }
 
-    const result = await processReturnBatch(body.packageIds, user.id, user.name, body.remark);
+    const result = await processReturnBatch(
+      body.packageIds,
+      user.id,
+      user.name,
+      user.role,
+      user.companyId,
+      body.remark
+    );
 
     res.json({
       success: true,
@@ -333,23 +340,15 @@ router.put('/:id/return', requireCourierOrAdmin, async (req: AuthRequest, res) =
     const { id } = req.params;
     const user = await getCurrentUser(req.user!.id);
     const { remark } = req.body as { remark?: string };
-    
-    const pkg = await getPackageById(parseInt(id));
-    if (!pkg) {
-      return res.status(404).json({
-        success: false,
-        message: '包裹不存在',
-      });
-    }
 
-    if (user.role === 'courier' && pkg.companyId !== user.companyId) {
-      return res.status(403).json({
-        success: false,
-        message: '只能退回本公司的包裹',
-      });
-    }
-
-    const updatedPkg = await markAsReturned(parseInt(id), user.id, user.name, remark);
+    const updatedPkg = await markAsReturned(
+      parseInt(id),
+      user.id,
+      user.name,
+      user.role,
+      user.companyId,
+      remark
+    );
 
     res.json({
       success: true,

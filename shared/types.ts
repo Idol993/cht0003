@@ -220,6 +220,14 @@ export interface PackageReturnQueryParams {
   status?: PackageStatus;
 }
 
+export interface BatchReturnResult {
+  success: number;
+  failed: number;
+  errors: string[];
+  successItems: { id: number; trackingNumber: string }[];
+  failedItems: { id: number; trackingNumber?: string; error: string }[];
+}
+
 export interface ReservationCreateRequest {
   residentId?: number;
   itemName: string;

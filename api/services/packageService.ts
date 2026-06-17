@@ -37,12 +37,42 @@ interface PackageDb {
   courier_name: string;
 }
 
+const MIN_RETURN_DAYS = 7;
+
+function getReturnDays(storedAtStr: string): number {
+  const storedAt = new Date(storedAtStr).getTime();
+  const now = Date.now();
+  const diffHours = (now - storedAt) / (1000 * 60 * 60);
+  return Math.floor(diffHours / 24);
+}
+
+function isPackageEligibleForReturn(dbPkg: PackageDb): { eligible: boolean; reason?: string; days: number } {
+  const days = getReturnDays(dbPkg.stored_at);
+  const pkgStatus = dbPkg.status as string;
+
+  if (pkgStatus === 'expired') {
+    return { eligible: true, days };
+  }
+
+  if (pkgStatus === 'pending' && days >= MIN_RETURN_DAYS) {
+    return { eligible: true, days };
+  }
+
+  if (pkgStatus !== 'pending' && pkgStatus !== 'expired') {
+    return { eligible: false, reason: `包裹状态为${dbPkg.status}，不允许退回`, days };
+  }
+
+  const remainingDays = MIN_RETURN_DAYS - days;
+  return { eligible: false, reason: `存放仅${days}天，未满${MIN_RETURN_DAYS}天（还需${remainingDays}天），暂不可退回`, days };
+}
+
 function mapPackage(dbPkg: PackageDb): Package {
   const storedAt = new Date(dbPkg.stored_at);
   const now = new Date();
   const storageHours = Math.floor((now.getTime() - storedAt.getTime()) / (1000 * 60 * 60));
   const isOverdue = storageHours > 48 && dbPkg.status === 'pending';
-  const overdueDays = isOverdue ? Math.floor((storageHours - 48) / 24) : 0;
+  const returnDays = getReturnDays(dbPkg.stored_at);
+  const overdueDays = Math.max(0, returnDays);
 
   return {
     id: dbPkg.id,
@@ -328,8 +358,11 @@ export async function getReturnList(
   const whereConditions: string[] = [];
   const sqlParams: any[] = [];
 
-  whereConditions.push('(p.status = ? OR p.status = ?)');
-  sqlParams.push('pending', 'expired');
+  whereConditions.push(`(
+    (p.status = ? AND julianday('now') - julianday(p.stored_at) >= ?) 
+    OR p.status = ?
+  )`);
+  sqlParams.push('pending', MIN_RETURN_DAYS, 'expired');
 
   if (userRole === 'courier' && userCompanyId) {
     whereConditions.push('p.company_id = ?');
@@ -346,34 +379,43 @@ export async function getReturnList(
     sqlParams.push(params.zone);
   }
 
-  if (params.minOverdueDays !== undefined) {
-    whereConditions.push("julianday('now') - julianday(p.stored_at) >= ?");
-    sqlParams.push(params.minOverdueDays);
-  }
+  const minDays = params.minOverdueDays !== undefined 
+    ? Math.max(params.minOverdueDays, MIN_RETURN_DAYS) 
+    : MIN_RETURN_DAYS;
+  whereConditions.push("julianday('now') - julianday(p.stored_at) >= ?");
+  sqlParams.push(minDays);
 
   if (params.maxOverdueDays !== undefined) {
     whereConditions.push("julianday('now') - julianday(p.stored_at) <= ?");
     sqlParams.push(params.maxOverdueDays);
   }
 
-  if (whereConditions.length > 0) {
-    sql += ' WHERE ' + whereConditions.join(' AND ');
-  }
-
+  sql += ' WHERE ' + whereConditions.join(' AND ');
   sql += ' ORDER BY p.stored_at ASC LIMIT 500';
 
   const packages = await queryMany<PackageDb>(sql, sqlParams);
   return packages.map(mapPackage);
 }
 
-export async function markAsReturned(packageId: number, operatorId: number, operatorName: string, remark?: string): Promise<Package> {
-  const pkg = await getPackageById(packageId);
-  if (!pkg) {
+export async function markAsReturned(packageId: number, operatorId: number, operatorName: string, operatorRole: UserRole, operatorCompanyId?: number, remark?: string): Promise<Package> {
+  const sql = baseQuery + ' WHERE p.id = ?';
+  const dbPkg = await queryOne<PackageDb>(sql, [packageId]);
+  if (!dbPkg) {
     throw new Error('包裹不存在');
   }
-  if (pkg.status !== 'pending' && pkg.status !== 'expired') {
-    throw new Error('只有待取件或已过期的包裹可以退回');
+
+  const eligibility = isPackageEligibleForReturn(dbPkg);
+  if (!eligibility.eligible) {
+    throw new Error(eligibility.reason || '包裹不符合退回条件');
   }
+
+  if (operatorRole === 'courier' && operatorCompanyId !== undefined) {
+    if (dbPkg.company_id !== operatorCompanyId) {
+      throw new Error(`不属于您所在的快递公司，无法退回。本公司ID: ${operatorCompanyId}，包裹公司ID: ${dbPkg.company_id}`);
+    }
+  }
+
+  let updatedPkg: Package | undefined;
 
   await executeTransaction(async () => {
     await execute(
@@ -383,14 +425,14 @@ export async function markAsReturned(packageId: number, operatorId: number, oper
 
     await execute(
       'UPDATE lockers SET current_package_id = NULL, status = ? WHERE id = ?',
-      ['available', pkg.lockerId]
+      ['available', dbPkg.locker_id]
     );
 
     const logRemark = remark || '包裹已退回';
     await addOperationLog(packageId, 'return', operatorId, operatorName, logRemark);
   });
 
-  const updatedPkg = await getPackageById(packageId);
+  updatedPkg = await getPackageById(packageId);
   if (!updatedPkg) {
     throw new Error('退回操作失败');
   }
@@ -398,25 +440,58 @@ export async function markAsReturned(packageId: number, operatorId: number, oper
   return updatedPkg;
 }
 
+export interface BatchReturnResult {
+  success: number;
+  failed: number;
+  errors: string[];
+  successItems: { id: number; trackingNumber: string }[];
+  failedItems: { id: number; trackingNumber?: string; error: string }[];
+}
+
 export async function processReturnBatch(
   packageIds: number[],
   operatorId: number,
   operatorName: string,
+  operatorRole: UserRole,
+  operatorCompanyId?: number,
   remark?: string
-): Promise<{ success: number; failed: number; errors: string[] }> {
-  const result = {
+): Promise<BatchReturnResult> {
+  const uniqueIds = [...new Set(packageIds)];
+  
+  const result: BatchReturnResult = {
     success: 0,
     failed: 0,
-    errors: [] as string[],
+    errors: [],
+    successItems: [],
+    failedItems: [],
   };
 
-  for (const packageId of packageIds) {
+  for (const packageId of uniqueIds) {
+    let trackingNumber: string | undefined;
+    
     try {
-      await markAsReturned(packageId, operatorId, operatorName, remark);
+      const dbPkg = await queryOne<{ id: number; tracking_no: string }>(
+        'SELECT id, tracking_no FROM packages WHERE id = ?',
+        [packageId]
+      );
+      trackingNumber = dbPkg?.tracking_no;
+
+      const pkg = await markAsReturned(
+        packageId,
+        operatorId,
+        operatorName,
+        operatorRole,
+        operatorCompanyId,
+        remark
+      );
+      
       result.success++;
+      result.successItems.push({ id: packageId, trackingNumber: pkg.trackingNumber });
     } catch (error: any) {
+      const errorMsg = error.message || '未知错误';
       result.failed++;
-      result.errors.push(`包裹ID ${packageId}: ${error.message || '未知错误'}`);
+      result.errors.push(`包裹ID ${packageId}${trackingNumber ? `（运单：${trackingNumber}）` : ''}：${errorMsg}`);
+      result.failedItems.push({ id: packageId, trackingNumber, error: errorMsg });
     }
   }
 

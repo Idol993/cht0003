@@ -1,4 +1,4 @@
-import { ApiResponse, LoginRequest, LoginResponse, User, Package, PackageCreateRequest, PackageBatchImportRequest, PackageBatchImportResponse, PickupVerifyRequest, Locker, Reservation, ReservationCreateRequest, StatisticsSummary, TrendData, Company, CompanyStats, Notification, OperationLog, NotificationDelivery, ReturnProcessRequest, PackageReturnQueryParams, NotificationQueryParams } from '../../shared/types';
+import { ApiResponse, LoginRequest, LoginResponse, User, Package, PackageCreateRequest, PackageBatchImportRequest, PackageBatchImportResponse, PickupVerifyRequest, Locker, Reservation, ReservationCreateRequest, StatisticsSummary, TrendData, Company, CompanyStats, Notification, OperationLog, NotificationDelivery, ReturnProcessRequest, PackageReturnQueryParams, NotificationQueryParams, BatchReturnResult } from '../../shared/types';
 
 const API_BASE = '/api';
 
@@ -104,7 +104,7 @@ export const packageApi = {
     }),
 
   processReturns: (data: ReturnProcessRequest) =>
-    request<{ success: number; failed: number; errors: string[] }>('/packages/return/batch', {
+    request<BatchReturnResult>('/packages/return/batch', {
       method: 'POST',
       body: JSON.stringify(data),
     }),

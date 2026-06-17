@@ -1,10 +1,12 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { RotateCcw, Search, Filter, CheckCircle, AlertTriangle, Package, MapPin, Clock, CheckSquare, Square, Trash2 } from 'lucide-react';
+import { RotateCcw, Search, Filter, CheckCircle, AlertTriangle, Package, MapPin, Clock, CheckSquare, Square, Trash2, XCircle, CheckCheck, Info } from 'lucide-react';
 import { packageApi, userApi } from '../utils/api';
 import { useToast } from '../components/Toast';
 import { Modal } from '../components/Modal';
-import { Package as PackageType, Company } from '../../shared/types';
+import { Package as PackageType, Company, BatchReturnResult } from '../../shared/types';
 import { useAuthStore } from '../stores/useAuthStore';
+
+const MIN_RETURN_DAYS = 7;
 
 const Returns: React.FC = () => {
   const { user } = useAuthStore();
@@ -14,12 +16,14 @@ const Returns: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [companyFilter, setCompanyFilter] = useState<string>('');
   const [zoneFilter, setZoneFilter] = useState<string>('');
-  const [minOverdueDays, setMinOverdueDays] = useState<number>(7);
+  const [minOverdueDays, setMinOverdueDays] = useState<number>(MIN_RETURN_DAYS);
   const [maxOverdueDays, setMaxOverdueDays] = useState<number>(30);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [showBatchConfirm, setShowBatchConfirm] = useState(false);
   const [showSingleConfirm, setShowSingleConfirm] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState<PackageType | null>(null);
+  const [batchResult, setBatchResult] = useState<BatchReturnResult | null>(null);
+  const [showResultModal, setShowResultModal] = useState(false);
 
   const zones = ['A区', 'B区', 'C区'];
 
@@ -70,7 +74,7 @@ const Returns: React.FC = () => {
   const handleReset = () => {
     setCompanyFilter(user?.role === 'courier' && user.companyId ? String(user.companyId) : '');
     setZoneFilter('');
-    setMinOverdueDays(7);
+    setMinOverdueDays(MIN_RETURN_DAYS);
     setMaxOverdueDays(30);
   };
 
@@ -107,8 +111,17 @@ const Returns: React.FC = () => {
     
     try {
       const result = await packageApi.processReturns({ packageIds: selectedIds });
-      showToast(`成功退回 ${result.success} 个包裹，失败 ${result.failed} 个`, result.failed > 0 ? 'warning' : 'success');
+      setBatchResult(result);
       setShowBatchConfirm(false);
+      setShowResultModal(true);
+      
+      if (result.failed > 0) {
+        showToast(`批量退回完成：成功${result.success}个，失败${result.failed}个`, 'warning');
+      } else {
+        showToast(`批量退回完成：成功${result.success}个`, 'success');
+      }
+      
+      setSelectedIds([]);
       loadPackages();
     } catch (e: any) {
       showToast(e.message, 'error');
@@ -177,21 +190,22 @@ const Returns: React.FC = () => {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               超期天数：{minOverdueDays} - {maxOverdueDays} 天
+              <span className="text-xs text-red-500 ml-2">（最少{MIN_RETURN_DAYS}天可退回）</span>
             </label>
             <div className="flex items-center gap-3">
               <input
                 type="number"
                 value={minOverdueDays}
-                onChange={(e) => setMinOverdueDays(Math.max(0, parseInt(e.target.value) || 0))}
-                min="0"
+                onChange={(e) => setMinOverdueDays(Math.max(MIN_RETURN_DAYS, parseInt(e.target.value) || MIN_RETURN_DAYS))}
+                min={MIN_RETURN_DAYS}
                 className="w-20 px-3 py-2 rounded-xl border border-gray-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
               />
               <span className="text-gray-400">至</span>
               <input
                 type="number"
                 value={maxOverdueDays}
-                onChange={(e) => setMaxOverdueDays(Math.max(0, parseInt(e.target.value) || 0))}
-                min="0"
+                onChange={(e) => setMaxOverdueDays(Math.max(MIN_RETURN_DAYS, parseInt(e.target.value) || MIN_RETURN_DAYS))}
+                min={MIN_RETURN_DAYS}
                 className="w-20 px-3 py-2 rounded-xl border border-gray-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
               />
             </div>
@@ -428,6 +442,107 @@ const Returns: React.FC = () => {
           </div>
         </div>
       </Modal>
+
+      <Modal
+        isOpen={showResultModal}
+        onClose={() => setShowResultModal(false)}
+        title="批量退回结果"
+        size="lg"
+      >
+        {batchResult && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="p-4 bg-green-50 rounded-xl text-center">
+                <CheckCircle className="w-8 h-8 mx-auto mb-2 text-green-600" />
+                <p className="text-2xl font-bold text-green-700">{batchResult.success}</p>
+                <p className="text-sm text-green-600">成功退回</p>
+              </div>
+              <div className="p-4 bg-red-50 rounded-xl text-center">
+                <XCircle className="w-8 h-8 mx-auto mb-2 text-red-600" />
+                <p className="text-2xl font-bold text-red-700">{batchResult.failed}</p>
+                <p className="text-sm text-red-600">处理失败</p>
+              </div>
+            </div>
+
+            {batchResult.successItems.length > 0 && (
+              <div>
+                <h4 className="font-medium text-gray-900 mb-2 flex items-center gap-2">
+                  <CheckCheck className="w-4 h-4 text-green-600" />
+                  成功列表
+                </h4>
+                <div className="max-h-40 overflow-y-auto bg-gray-50 rounded-xl p-3 space-y-1">
+                  {batchResult.successItems.map((item) => (
+                    <div key={item.id} className="text-sm text-gray-700 flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />
+                      <span className="font-mono">{item.trackingNumber}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {batchResult.failedItems.length > 0 && (
+              <div>
+                <h4 className="font-medium text-gray-900 mb-2 flex items-center gap-2">
+                  <XCircle className="w-4 h-4 text-red-600" />
+                  失败列表
+                </h4>
+                <div className="max-h-60 overflow-y-auto bg-gray-50 rounded-xl p-3 space-y-2">
+                  {batchResult.failedItems.map((item) => (
+                    <div key={item.id} className="text-sm bg-red-50 p-3 rounded-lg border border-red-100">
+                      <div className="flex items-center gap-2 mb-1">
+                        <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
+                        <span className="font-mono font-medium text-red-700">
+                          {item.trackingNumber || `包裹ID: ${item.id}`}
+                        </span>
+                      </div>
+                      <p className="text-red-600 text-xs pl-6">{item.error}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="pt-4 border-t border-gray-100">
+              <button
+                onClick={() => setShowResultModal(false)}
+                className="w-full py-3 bg-primary text-white rounded-xl font-medium hover:bg-primary/90 transition-all"
+              >
+                确定
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <div className="bg-blue-50 rounded-2xl p-5">
+        <h3 className="font-semibold text-blue-900 mb-3 flex items-center gap-2">
+          <Info className="w-5 h-5" />
+          退回规则说明
+        </h3>
+        <ul className="space-y-2 text-sm text-blue-700">
+          <li className="flex items-start gap-2">
+            <CheckCircle className="w-4 h-4 mt-0.5 text-blue-600 flex-shrink-0" />
+            <span>存放满 <strong>7天</strong> 未取件的包裹才允许退回处理</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <CheckCircle className="w-4 h-4 mt-0.5 text-blue-600 flex-shrink-0" />
+            <span>已被系统标记为 <strong>"已超期"(expired)</strong> 的包裹可直接退回</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <CheckCircle className="w-4 h-4 mt-0.5 text-blue-600 flex-shrink-0" />
+            <span>快递员仅可退回 <strong>本公司</strong> 范围内的包裹</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <XCircle className="w-4 h-4 mt-0.5 text-blue-600 flex-shrink-0" />
+            <span>未满7天、已取件、已退回状态的包裹 <strong>不可退回</strong></span>
+          </li>
+          <li className="flex items-start gap-2">
+            <XCircle className="w-4 h-4 mt-0.5 text-blue-600 flex-shrink-0" />
+            <span>不符合退回条件的包裹不会被释放格口，也不会留下退回记录</span>
+          </li>
+        </ul>
+      </div>
     </div>
   );
 };
