@@ -10,7 +10,8 @@ import {
 } from '../../shared/types';
 import { generateUniquePickupCode, validatePickupCode } from './pickupCodeService';
 import { getAvailableLocker, updateLockerStatus } from './lockerService';
-import { createNotification } from './notificationService';
+import { createNotification, findResidentUserByPhoneSuffix } from './notificationService';
+import { getCurrentUser } from './authService';
 
 interface PackageDb {
   id: number;
@@ -77,11 +78,21 @@ const baseQuery = `
 
 export async function createPackage(
   req: PackageCreateRequest,
-  courierId: number,
-  courierName: string
+  operatorId: number
 ): Promise<Package> {
-  const { trackingNumber, trackingNo, phoneSuffix, companyId } = req;
+  const operator = await getCurrentUser(operatorId);
+  const { trackingNumber, trackingNo, phoneSuffix } = req;
   const trackingNumberToUse = trackingNumber || trackingNo;
+
+  let finalCompanyId: number;
+  if (operator.role === 'courier') {
+    if (!operator.companyId) {
+      throw new Error('快递员未绑定公司，无法入库');
+    }
+    finalCompanyId = operator.companyId;
+  } else {
+    finalCompanyId = req.companyId;
+  }
 
   if (!trackingNumberToUse) {
     throw new Error('运单号不能为空');
@@ -115,25 +126,30 @@ export async function createPackage(
       trackingNumberToUse,
       pickupCode,
       phoneSuffix,
-      companyId,
+      finalCompanyId,
       locker.id,
-      courierId,
+      operatorId,
     ]);
 
     packageId = result.lastInsertRowid as number;
 
     await updateLockerStatus(locker.id, 'occupied', packageId);
 
-    await addOperationLog(packageId, 'store', courierId, courierName, '快递入库');
+    await addOperationLog(packageId, 'store', operatorId, operator.name, '快递入库');
 
-    await createNotification({
-      userId: 0,
-      type: 'pickup',
-      title: '快递已送达',
-      content: `您的${await getCompanyName(companyId)}快递已存入${locker.zone}${locker.code}格口，取件码：${pickupCode}`,
-      packageId,
-      phoneSuffix,
-    });
+    const residentUser = await findResidentUserByPhoneSuffix(phoneSuffix);
+    if (residentUser) {
+      await createNotification({
+        userId: residentUser.id,
+        type: 'pickup',
+        title: '快递已送达',
+        content: `您的${await getCompanyName(finalCompanyId)}快递已存入${locker.zone}${locker.code}格口，取件码：${pickupCode}`,
+        packageId,
+        phoneSuffix,
+      });
+    } else {
+      await addOperationLog(packageId, 'store', operatorId, operator.name, '未找到匹配居民用户，跳过通知');
+    }
   });
 
   return (await getPackageById(packageId!))!;
@@ -141,12 +157,22 @@ export async function createPackage(
 
 export async function batchImportPackages(
   req: PackageBatchImportRequest,
-  courierId: number,
-  courierName: string
+  operatorId: number
 ): Promise<PackageBatchImportResponse> {
+  const operator = await getCurrentUser(operatorId);
   const success: Package[] = [];
   const errors: string[] = [];
   const failures: { trackingNumber: string; error: string }[] = [];
+
+  let finalCompanyId: number;
+  if (operator.role === 'courier') {
+    if (!operator.companyId) {
+      throw new Error('快递员未绑定公司，无法批量入库');
+    }
+    finalCompanyId = operator.companyId;
+  } else {
+    finalCompanyId = req.companyId;
+  }
 
   for (let i = 0; i < req.items.length; i++) {
     const item = req.items[i];
@@ -156,10 +182,9 @@ export async function batchImportPackages(
           trackingNumber: item.trackingNo,
           trackingNo: item.trackingNo,
           phoneSuffix: item.phoneSuffix,
-          companyId: req.companyId,
+          companyId: finalCompanyId,
         },
-        courierId,
-        courierName
+        operatorId
       );
       success.push(pkg);
     } catch (error: any) {
@@ -276,13 +301,18 @@ export async function verifyPickup(pickupCode: string, operatorId: number, opera
 
     await addOperationLog(pkg.id, 'pickup', operatorId, operatorName, '包裹已取件');
 
-    await createNotification({
-      userId: 0,
-      type: 'system',
-      title: '包裹已取件',
-      content: `运单${pkg.tracking_no}已被取件，格口${pkg.locker_code}已释放`,
-      packageId: pkg.id,
-    });
+    const residentUser = await findResidentUserByPhoneSuffix(pkg.phone_suffix);
+    if (residentUser) {
+      await createNotification({
+        userId: residentUser.id,
+        type: 'system',
+        title: '包裹已取件',
+        content: `运单${pkg.tracking_no}已被取件，格口${pkg.locker_code}已释放`,
+        packageId: pkg.id,
+      });
+    } else {
+      await addOperationLog(pkg.id, 'pickup', operatorId, operatorName, '未找到匹配居民用户，跳过取件通知');
+    }
   });
 
   const updatedPkg = await getPackageById(pkg.id);

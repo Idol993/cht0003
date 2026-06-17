@@ -1,5 +1,5 @@
 import { queryOne, queryMany, execute } from '../db';
-import { Notification, NotificationType } from '../../shared/types';
+import { Notification, NotificationType, User } from '../../shared/types';
 import { addOperationLog } from './packageService';
 
 interface CreateNotificationParams {
@@ -11,6 +11,17 @@ interface CreateNotificationParams {
   phoneSuffix?: string;
 }
 
+export async function findResidentUserByPhoneSuffix(phoneSuffix: string): Promise<User | undefined> {
+  const sql = `
+    SELECT u.*, c.name as company_name
+    FROM users u
+    LEFT JOIN companies c ON u.company_id = c.id
+    WHERE u.role = 'resident' AND u.phone LIKE ?
+    LIMIT 1
+  `;
+  return await queryOne<User>(sql, [`%${phoneSuffix}`]);
+}
+
 export async function createNotification(params: CreateNotificationParams): Promise<Notification> {
   const { userId, type, title, content, packageId } = params;
 
@@ -18,7 +29,7 @@ export async function createNotification(params: CreateNotificationParams): Prom
     INSERT INTO notifications (user_id, type, title, content, package_id, read)
     VALUES (?, ?, ?, ?, ?, 0)
   `;
-  const result = await execute(sql, [userId || null, type, title, content, packageId || null]);
+  const result = await execute(sql, [userId, type, title, content, packageId || null]);
 
   const notification = await queryOne<Notification>(
     'SELECT * FROM notifications WHERE id = ?',
@@ -35,7 +46,7 @@ export async function createNotification(params: CreateNotificationParams): Prom
 export async function getUserNotifications(userId: number, limit: number = 50): Promise<Notification[]> {
   const sql = `
     SELECT * FROM notifications 
-    WHERE user_id = ? OR user_id = 0
+    WHERE user_id = ?
     ORDER BY created_at DESC 
     LIMIT ?
   `;
@@ -52,14 +63,14 @@ export async function getUnreadCount(userId: number): Promise<number> {
 
 export async function markAsRead(notificationId: number, userId: number): Promise<void> {
   await execute(
-    'UPDATE notifications SET read = 1 WHERE id = ? AND (user_id = ? OR user_id = 0)',
+    'UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?',
     [notificationId, userId]
   );
 }
 
 export async function markAllAsRead(userId: number): Promise<void> {
   await execute(
-    'UPDATE notifications SET read = 1 WHERE user_id = ? OR user_id = 0',
+    'UPDATE notifications SET read = 1 WHERE user_id = ?',
     [userId]
   );
 }
@@ -86,14 +97,19 @@ export async function sendOverdueReminders(): Promise<number> {
       (Date.now() - new Date(pkg.stored_at).getTime()) / (1000 * 60 * 60 * 24)
     );
 
-    await createNotification({
-      userId: 0,
-      type: 'reminder',
-      title: '取件提醒',
-      content: `您的${pkg.company_name}快递（运单：${pkg.tracking_no}）已存放${days}天，请尽快到${pkg.locker_zone}${pkg.locker_code}格口取件，取件码：${pkg.pickup_code}`,
-      packageId: pkg.id,
-      phoneSuffix: pkg.phone_suffix,
-    });
+    const residentUser = await findResidentUserByPhoneSuffix(pkg.phone_suffix);
+    if (residentUser) {
+      await createNotification({
+        userId: residentUser.id,
+        type: 'reminder',
+        title: '取件提醒',
+        content: `您的${pkg.company_name}快递（运单：${pkg.tracking_no}）已存放${days}天，请尽快到${pkg.locker_zone}${pkg.locker_code}格口取件，取件码：${pkg.pickup_code}`,
+        packageId: pkg.id,
+        phoneSuffix: pkg.phone_suffix,
+      });
+    } else {
+      await addOperationLog(pkg.id, 'reminder', undefined, undefined, `未找到匹配居民用户（尾号${pkg.phone_suffix}），跳过逾期提醒通知`);
+    }
 
     await execute(
       'UPDATE packages SET last_reminder_at = CURRENT_TIMESTAMP WHERE id = ?',
@@ -114,7 +130,6 @@ export async function sendExpiredNotifications(): Promise<number> {
     LEFT JOIN users u ON p.courier_id = u.id
     WHERE p.status = 'pending'
     AND julianday('now') - julianday(p.stored_at) > 7
-    AND p.last_reminder_at IS NULL
   `;
 
   const expiredPackages = await queryMany<any>(sql);

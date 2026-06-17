@@ -22,7 +22,7 @@ router.post('/', requireCourierOrAdmin, async (req: AuthRequest, res) => {
     const body = req.body as PackageCreateRequest;
     const trackingNumberToUse = body.trackingNumber || body.trackingNo;
     
-    if (!trackingNumberToUse || !body.phoneSuffix || !body.companyId) {
+    if (!trackingNumberToUse || !body.phoneSuffix) {
       return res.status(400).json({
         success: false,
         message: '请填写完整的包裹信息',
@@ -30,7 +30,14 @@ router.post('/', requireCourierOrAdmin, async (req: AuthRequest, res) => {
     }
 
     const user = await getCurrentUser(req.user!.id);
-    const pkg = await createPackage(body, user.id, user.name);
+    if (user.role === 'admin' && !body.companyId) {
+      return res.status(400).json({
+        success: false,
+        message: '管理员入库需指定快递公司',
+      });
+    }
+
+    const pkg = await createPackage(body, user.id);
 
     res.json({
       success: true,
@@ -57,7 +64,14 @@ router.post('/batch', requireCourierOrAdmin, async (req: AuthRequest, res) => {
     }
 
     const user = await getCurrentUser(req.user!.id);
-    const result = await batchImportPackages(body, user.id, user.name);
+    if (user.role === 'admin' && !body.companyId) {
+      return res.status(400).json({
+        success: false,
+        message: '管理员批量入库需指定快递公司',
+      });
+    }
+
+    const result = await batchImportPackages(body, user.id);
 
     res.json({
       success: true,

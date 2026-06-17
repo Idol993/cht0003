@@ -1,17 +1,31 @@
 import React, { useState } from 'react';
-import { Package, Phone, Lock, ArrowRight, UserPlus } from 'lucide-react';
+import { Package, Phone, Lock, ArrowRight, UserPlus, Shield, Truck, Home } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useToast } from '../components/Toast';
+import { UserRole } from '../../shared/types';
 
 const Login: React.FC = () => {
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
+  const [role, setRole] = useState<UserRole>('resident');
   const [sendingCode, setSendingCode] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const { login, loading, error } = useAuthStore();
   const { showToast } = useToast();
   const navigate = useNavigate();
+
+  const roleOptions: { value: UserRole; label: string; icon: any; desc: string }[] = [
+    { value: 'resident', label: '居民', icon: Home, desc: '查看包裹/预约存放' },
+    { value: 'courier', label: '快递员', icon: Truck, desc: '入库/批量导入' },
+    { value: 'admin', label: '管理员', icon: Shield, desc: '全局管理/统计' },
+  ];
+
+  const demoAccounts: { role: UserRole; phone: string; label: string }[] = [
+    { role: 'admin', phone: '13800000000', label: '管理员' },
+    { role: 'courier', phone: '13800000003', label: '顺丰快递员' },
+    { role: 'resident', phone: '13800000001', label: '居民张三' },
+  ];
 
   const handleSendCode = async () => {
     if (!/^1\d{10}$/.test(phone)) {
@@ -44,15 +58,21 @@ const Login: React.FC = () => {
     }
   };
 
+  const handleDemoClick = (account: typeof demoAccounts[0]) => {
+    setRole(account.role);
+    setPhone(account.phone);
+    setCode('123456');
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!phone || !code) {
-      showToast('请填写完整信息', 'error');
+    if (!phone || !code || !role) {
+      showToast('请填写完整信息（手机号、验证码、角色）', 'error');
       return;
     }
 
     try {
-      await login({ phone, code });
+      await login({ phone, code, role });
       showToast('登录成功', 'success');
       navigate('/');
     } catch (e: any) {
@@ -82,6 +102,32 @@ const Login: React.FC = () => {
 
           <form onSubmit={handleLogin} className="space-y-6">
             <div>
+              <label className="block text-sm font-medium text-gray-700 mb-3">
+                选择身份
+              </label>
+              <div className="grid grid-cols-3 gap-3">
+                {roleOptions.map((opt) => {
+                  const Icon = opt.icon;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setRole(opt.value)}
+                      className={`p-3 rounded-xl border-2 transition-all text-center ${
+                        role === opt.value
+                          ? 'border-primary bg-primary/5 text-primary'
+                          : 'border-gray-200 hover:border-gray-300 text-gray-600'
+                      }`}
+                    >
+                      <Icon className="w-6 h-6 mx-auto mb-1" />
+                      <p className="text-sm font-medium">{opt.label}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 手机号
               </label>
@@ -108,7 +154,7 @@ const Login: React.FC = () => {
                     type="text"
                     value={code}
                     onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                    placeholder="请输入验证码"
+                    placeholder="请输入验证码 (演示: 123456)"
                     className="w-full pl-12 pr-4 py-4 rounded-xl border border-gray-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all text-lg"
                   />
                 </div>
@@ -140,20 +186,24 @@ const Login: React.FC = () => {
           </form>
 
           <div className="mt-6 p-4 bg-blue-50 rounded-xl">
-            <p className="text-sm text-blue-700 font-medium mb-2">
+            <p className="text-sm text-blue-700 font-medium mb-3">
               <UserPlus className="w-4 h-4 inline mr-1" />
-              首次使用？
+              演示账号（点击一键填充）
             </p>
-            <p className="text-sm text-blue-600">
-              居民用户输入手机号后自动注册账号。
-              <br />
-              演示账号：
-              <br />
-              • 管理员：13800000001 / 123456
-              <br />
-              • 快递员：13800000002 / 123456
-              <br />
-              • 居民：13800000003 / 123456
+            <div className="space-y-2">
+              {demoAccounts.map((acc) => (
+                <button
+                  key={acc.phone}
+                  type="button"
+                  onClick={() => handleDemoClick(acc)}
+                  className="w-full text-left text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-100/50 px-3 py-2 rounded-lg transition-all"
+                >
+                  • {acc.label}：{acc.phone} / 123456
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-blue-500 mt-3 pt-3 border-t border-blue-100">
+              居民用户输入任意有效手机号 + 验证码123456即可自动注册
             </p>
           </div>
         </div>
