@@ -1,4 +1,4 @@
-import { ApiResponse, LoginRequest, LoginResponse, User, Package, PackageCreateRequest, PackageBatchImportRequest, PackageBatchImportResponse, PickupVerifyRequest, Locker, Reservation, ReservationCreateRequest, StatisticsSummary, TrendData, Company, CompanyStats, Notification, OperationLog } from '../../shared/types';
+import { ApiResponse, LoginRequest, LoginResponse, User, Package, PackageCreateRequest, PackageBatchImportRequest, PackageBatchImportResponse, PickupVerifyRequest, Locker, Reservation, ReservationCreateRequest, StatisticsSummary, TrendData, Company, CompanyStats, Notification, OperationLog, NotificationDelivery, ReturnProcessRequest, PackageReturnQueryParams, NotificationQueryParams } from '../../shared/types';
 
 const API_BASE = '/api';
 
@@ -97,13 +97,33 @@ export const packageApi = {
       body: JSON.stringify({ pickupCode } as PickupVerifyRequest),
     }),
 
-  markAsReturned: (id: number) =>
+  markAsReturned: (id: number, remark?: string) =>
     request<Package>(`/packages/${id}/return`, {
       method: 'PUT',
+      body: JSON.stringify({ remark }),
     }),
+
+  processReturns: (data: ReturnProcessRequest) =>
+    request<{ success: number; failed: number; errors: string[] }>('/packages/return/batch', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getReturnList: (params?: PackageReturnQueryParams) => {
+    const query = params ? `?${new URLSearchParams(params as any).toString()}` : '';
+    return request<Package[]>(`/packages/returns${query}`);
+  },
 
   getTrace: (id: number) =>
     request<OperationLog[]>(`/packages/${id}/trace`),
+
+  getDeliveries: (id: number) =>
+    request<NotificationDelivery[]>(`/packages/${id}/deliveries`),
+
+  claimPackage: (id: number) =>
+    request<Package>(`/packages/${id}/claim`, {
+      method: 'PUT',
+    }),
 };
 
 export const lockerApi = {
@@ -228,8 +248,8 @@ export const userApi = {
 };
 
 export const notificationApi = {
-  getList: (limit?: number) => {
-    const query = limit ? `?limit=${limit}` : '';
+  getList: (params?: NotificationQueryParams) => {
+    const query = params ? `?${new URLSearchParams(params as any).toString()}` : '';
     return request<Notification[]>(`/notifications${query}`);
   },
 
@@ -245,4 +265,9 @@ export const notificationApi = {
     request<void>('/notifications/read-all', {
       method: 'PUT',
     }),
+
+  getDeliveryLogs: (params?: any) => {
+    const query = params ? `?${new URLSearchParams(params as any).toString()}` : '';
+    return request<NotificationDelivery[]>(`/notifications/deliveries${query}`);
+  },
 };

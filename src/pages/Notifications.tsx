@@ -1,23 +1,29 @@
 import React, { useEffect, useState } from 'react';
-import { Mail, Check, CheckCheck, Package, Clock, AlertTriangle, RotateCcw, Calendar } from 'lucide-react';
+import { Mail, Check, CheckCheck, Package, Clock, AlertTriangle, RotateCcw, Calendar, Tag, Eye } from 'lucide-react';
 import { notificationApi } from '../utils/api';
 import { useToast } from '../components/Toast';
 import { Notification } from '../../shared/types';
+import { useNavigate } from 'react-router-dom';
 
 const Notifications: React.FC = () => {
   const { showToast } = useToast();
+  const navigate = useNavigate();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState<string>('');
+  const [unreadOnly, setUnreadOnly] = useState(false);
 
   useEffect(() => {
     loadNotifications();
-  }, []);
+  }, [filterType, unreadOnly]);
 
   const loadNotifications = async () => {
     setLoading(true);
     try {
-      const data = await notificationApi.getList(100);
+      const params: any = { limit: 100 };
+      if (filterType) params.type = filterType;
+      if (unreadOnly) params.unreadOnly = true;
+      const data = await notificationApi.getList(params);
       setNotifications(data);
     } catch (e: any) {
       showToast(e.message, 'error');
@@ -32,6 +38,22 @@ const Notifications: React.FC = () => {
       setNotifications((prev) =>
         prev.map((n) => (n.id === id ? { ...n, read: true } : n))
       );
+    } catch (e: any) {
+      showToast(e.message, 'error');
+    }
+  };
+
+  const handleNotificationClick = async (notification: Notification) => {
+    try {
+      if (!notification.read) {
+        await notificationApi.markAsRead(notification.id);
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === notification.id ? { ...n, read: true } : n))
+        );
+      }
+      if (notification.packageId) {
+        navigate(`/packages/${notification.packageId}`);
+      }
     } catch (e: any) {
       showToast(e.message, 'error');
     }
@@ -54,6 +76,7 @@ const Notifications: React.FC = () => {
       case 'return': return RotateCcw;
       case 'reservation': return Calendar;
       case 'system': return Mail;
+      case 'claim': return Tag;
       default: return Mail;
     }
   };
@@ -65,6 +88,7 @@ const Notifications: React.FC = () => {
       case 'return': return 'bg-red-100 text-red-600';
       case 'reservation': return 'bg-blue-100 text-blue-600';
       case 'system': return 'bg-purple-100 text-purple-600';
+      case 'claim': return 'bg-purple-100 text-purple-600';
       default: return 'bg-gray-100 text-gray-600';
     }
   };
@@ -76,13 +100,16 @@ const Notifications: React.FC = () => {
       case 'return': return '退回通知';
       case 'reservation': return '预约通知';
       case 'system': return '系统通知';
+      case 'claim': return '待认领通知';
       default: return type;
     }
   };
 
-  const filteredNotifications = filterType
-    ? notifications.filter((n) => n.type === filterType)
-    : notifications;
+  const filteredNotifications = notifications.filter((n) => {
+    if (filterType && n.type !== filterType) return false;
+    if (unreadOnly && n.read) return false;
+    return true;
+  });
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
@@ -92,6 +119,7 @@ const Notifications: React.FC = () => {
     { label: '超时提醒', value: notifications.filter(n => n.type === 'reminder').length, filter: 'reminder' },
     { label: '退回通知', value: notifications.filter(n => n.type === 'return').length, filter: 'return' },
     { label: '预约通知', value: notifications.filter(n => n.type === 'reservation').length, filter: 'reservation' },
+    { label: '待认领通知', value: notifications.filter(n => n.type === 'claim').length, filter: 'claim' },
   ];
 
   if (loading) {
@@ -105,7 +133,7 @@ const Notifications: React.FC = () => {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {typeStats.map((stat) => (
             <button
               key={stat.filter}
@@ -125,15 +153,28 @@ const Notifications: React.FC = () => {
             </button>
           ))}
         </div>
-        {unreadCount > 0 && (
+        <div className="flex items-center gap-4">
           <button
-            onClick={handleMarkAllAsRead}
-            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-xl font-medium hover:bg-gray-200 transition-all flex items-center gap-2"
+            onClick={() => setUnreadOnly(!unreadOnly)}
+            className={`px-4 py-2 rounded-xl font-medium transition-all flex items-center gap-2 ${
+              unreadOnly
+                ? 'bg-primary text-white shadow-lg shadow-primary/30'
+                : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+            }`}
           >
-            <CheckCheck className="w-4 h-4" />
-            全部已读
+            <Eye className="w-4 h-4" />
+            只看未读
           </button>
-        )}
+          {unreadCount > 0 && (
+            <button
+              onClick={handleMarkAllAsRead}
+              className="px-4 py-2 bg-gray-100 text-gray-700 rounded-xl font-medium hover:bg-gray-200 transition-all flex items-center gap-2"
+            >
+              <CheckCheck className="w-4 h-4" />
+              全部已读
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
@@ -153,7 +194,7 @@ const Notifications: React.FC = () => {
                   className={`p-4 hover:bg-gray-50 transition-colors cursor-pointer ${
                     !notification.read ? 'bg-blue-50/30' : ''
                   }`}
-                  onClick={() => !notification.read && handleMarkAsRead(notification.id)}
+                  onClick={() => handleNotificationClick(notification)}
                 >
                   <div className="flex gap-4">
                     <div className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 ${getTypeColor(notification.type)}`}>
@@ -223,6 +264,10 @@ const Notifications: React.FC = () => {
           <li className="flex items-start gap-2">
             <Calendar className="w-4 h-4 mt-0.5 text-blue-600" />
             <span><strong>预约通知：</strong>预约审核通过、拒绝或完成时发送通知</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <Tag className="w-4 h-4 mt-0.5 text-purple-600" />
+            <span><strong>待认领通知：</strong>手机尾号冲突时发送给匹配的用户，需认领后获取取件码</span>
           </li>
         </ul>
       </div>

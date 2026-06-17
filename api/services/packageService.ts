@@ -7,10 +7,12 @@ import {
   PackageStatus,
   UserRole,
   OperationLog,
+  PackageReturnQueryParams,
+  ReturnProcessRequest,
 } from '../../shared/types';
 import { generateUniquePickupCode, validatePickupCode } from './pickupCodeService';
 import { getAvailableLocker, updateLockerStatus } from './lockerService';
-import { createNotification, findResidentUserByPhoneSuffix } from './notificationService';
+import { createNotification, findResidentUserByPhoneSuffix, sendPickupNotification, sendClaimPickupNotification } from './notificationService';
 import { getCurrentUser } from './authService';
 
 interface PackageDb {
@@ -26,6 +28,9 @@ interface PackageDb {
   stored_at: string;
   picked_at?: string;
   created_at: string;
+  delivery_status: string;
+  conflict_count: number;
+  matched_user_ids?: string;
   company_name: string;
   locker_code: string;
   locker_zone: string;
@@ -60,6 +65,9 @@ function mapPackage(dbPkg: PackageDb): Package {
     storageHours,
     isOverdue,
     overdueDays,
+    deliveryStatus: dbPkg.delivery_status as any,
+    conflictCount: dbPkg.conflict_count || 0,
+    matchedUserIds: dbPkg.matched_user_ids ? dbPkg.matched_user_ids.split(',').map(Number) : undefined,
   };
 }
 
@@ -119,8 +127,8 @@ export async function createPackage(
     const insertSql = `
       INSERT INTO packages (
         tracking_no, pickup_code, phone_suffix, company_id, 
-        locker_id, courier_id, status
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending')
+        locker_id, courier_id, status, delivery_status, conflict_count
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 'pending', 0)
     `;
     const result = await execute(insertSql, [
       trackingNumberToUse,
@@ -137,19 +145,7 @@ export async function createPackage(
 
     await addOperationLog(packageId, 'store', operatorId, operator.name, '快递入库');
 
-    const residentUser = await findResidentUserByPhoneSuffix(phoneSuffix);
-    if (residentUser) {
-      await createNotification({
-        userId: residentUser.id,
-        type: 'pickup',
-        title: '快递已送达',
-        content: `您的${await getCompanyName(finalCompanyId)}快递已存入${locker.zone}${locker.code}格口，取件码：${pickupCode}`,
-        packageId,
-        phoneSuffix,
-      });
-    } else {
-      await addOperationLog(packageId, 'store', operatorId, operator.name, '未找到匹配居民用户，跳过通知');
-    }
+    await sendPickupNotification(packageId);
   });
 
   return (await getPackageById(packageId!))!;
@@ -323,13 +319,60 @@ export async function verifyPickup(pickupCode: string, operatorId: number, opera
   return updatedPkg;
 }
 
-export async function markAsReturned(packageId: number, operatorId: number, operatorName: string): Promise<Package> {
+export async function getReturnList(
+  params: PackageReturnQueryParams = {},
+  userRole?: UserRole,
+  userCompanyId?: number
+): Promise<Package[]> {
+  let sql = baseQuery;
+  const whereConditions: string[] = [];
+  const sqlParams: any[] = [];
+
+  whereConditions.push('(p.status = ? OR p.status = ?)');
+  sqlParams.push('pending', 'expired');
+
+  if (userRole === 'courier' && userCompanyId) {
+    whereConditions.push('p.company_id = ?');
+    sqlParams.push(userCompanyId);
+  }
+
+  if (params.companyId) {
+    whereConditions.push('p.company_id = ?');
+    sqlParams.push(params.companyId);
+  }
+
+  if (params.zone) {
+    whereConditions.push('l.zone = ?');
+    sqlParams.push(params.zone);
+  }
+
+  if (params.minOverdueDays !== undefined) {
+    whereConditions.push("julianday('now') - julianday(p.stored_at) >= ?");
+    sqlParams.push(params.minOverdueDays);
+  }
+
+  if (params.maxOverdueDays !== undefined) {
+    whereConditions.push("julianday('now') - julianday(p.stored_at) <= ?");
+    sqlParams.push(params.maxOverdueDays);
+  }
+
+  if (whereConditions.length > 0) {
+    sql += ' WHERE ' + whereConditions.join(' AND ');
+  }
+
+  sql += ' ORDER BY p.stored_at ASC LIMIT 500';
+
+  const packages = await queryMany<PackageDb>(sql, sqlParams);
+  return packages.map(mapPackage);
+}
+
+export async function markAsReturned(packageId: number, operatorId: number, operatorName: string, remark?: string): Promise<Package> {
   const pkg = await getPackageById(packageId);
   if (!pkg) {
     throw new Error('包裹不存在');
   }
-  if (pkg.status !== 'pending') {
-    throw new Error('只有待取件的包裹可以退回');
+  if (pkg.status !== 'pending' && pkg.status !== 'expired') {
+    throw new Error('只有待取件或已过期的包裹可以退回');
   }
 
   await executeTransaction(async () => {
@@ -338,14 +381,77 @@ export async function markAsReturned(packageId: number, operatorId: number, oper
       ['returned', packageId]
     );
 
-    await updateLockerStatus(pkg.lockerId, 'available', undefined);
+    await execute(
+      'UPDATE lockers SET current_package_id = NULL, status = ? WHERE id = ?',
+      ['available', pkg.lockerId]
+    );
 
-    await addOperationLog(packageId, 'return', operatorId, operatorName, '包裹已退回');
+    const logRemark = remark || '包裹已退回';
+    await addOperationLog(packageId, 'return', operatorId, operatorName, logRemark);
   });
 
   const updatedPkg = await getPackageById(packageId);
   if (!updatedPkg) {
     throw new Error('退回操作失败');
+  }
+
+  return updatedPkg;
+}
+
+export async function processReturnBatch(
+  packageIds: number[],
+  operatorId: number,
+  operatorName: string,
+  remark?: string
+): Promise<{ success: number; failed: number; errors: string[] }> {
+  const result = {
+    success: 0,
+    failed: 0,
+    errors: [] as string[],
+  };
+
+  for (const packageId of packageIds) {
+    try {
+      await markAsReturned(packageId, operatorId, operatorName, remark);
+      result.success++;
+    } catch (error: any) {
+      result.failed++;
+      result.errors.push(`包裹ID ${packageId}: ${error.message || '未知错误'}`);
+    }
+  }
+
+  return result;
+}
+
+export async function claimPackage(packageId: number, userId: number): Promise<Package> {
+  const sql = baseQuery + ' WHERE p.id = ?';
+  const dbPkg = await queryOne<PackageDb>(sql, [packageId]);
+
+  if (!dbPkg) {
+    throw new Error('包裹不存在');
+  }
+
+  if (dbPkg.delivery_status !== 'conflict') {
+    throw new Error('该包裹无需认领');
+  }
+
+  const matchedUserIds = dbPkg.matched_user_ids ? dbPkg.matched_user_ids.split(',').map(Number) : [];
+  if (!matchedUserIds.includes(userId)) {
+    throw new Error('您无权认领此包裹');
+  }
+
+  await executeTransaction(async () => {
+    await execute(
+      'UPDATE packages SET delivery_status = ?, resident_id = ? WHERE id = ?',
+      ['claimed', userId, packageId]
+    );
+
+    await sendClaimPickupNotification(packageId, userId);
+  });
+
+  const updatedPkg = await getPackageById(packageId);
+  if (!updatedPkg) {
+    throw new Error('认领操作失败');
   }
 
   return updatedPkg;

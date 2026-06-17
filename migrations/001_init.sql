@@ -34,6 +34,9 @@ CREATE TABLE packages (
   picked_at DATETIME,
   last_reminder_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  delivery_status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (delivery_status IN ('pending', 'delivered', 'conflict', 'claimed')),
+  conflict_count INTEGER DEFAULT 0,
+  matched_user_ids TEXT,
   FOREIGN KEY (company_id) REFERENCES companies(id),
   FOREIGN KEY (courier_id) REFERENCES users(id),
   FOREIGN KEY (resident_id) REFERENCES users(id)
@@ -80,14 +83,32 @@ CREATE TABLE operation_logs (
 CREATE TABLE notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
-  type VARCHAR(20) NOT NULL CHECK (type IN ('pickup', 'reminder', 'return', 'reservation', 'system')),
+  type VARCHAR(20) NOT NULL CHECK (type IN ('pickup', 'reminder', 'return', 'reservation', 'system', 'claim')),
   title VARCHAR(100) NOT NULL,
   content TEXT NOT NULL,
   package_id INTEGER,
+  delivery_id INTEGER,
   read BOOLEAN DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id),
   FOREIGN KEY (package_id) REFERENCES packages(id)
+);
+
+-- 通知投递记录表
+CREATE TABLE notification_deliveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  package_id INTEGER NOT NULL,
+  notification_type VARCHAR(20) NOT NULL CHECK (notification_type IN ('pickup', 'reminder', 'return', 'claim')),
+  status VARCHAR(20) NOT NULL CHECK (status IN ('success', 'blocked_conflict', 'no_match', 'failed')),
+  recipient_user_id INTEGER,
+  recipient_phone VARCHAR(20),
+  recipient_name VARCHAR(50),
+  matched_count INTEGER DEFAULT 0,
+  matched_user_ids TEXT,
+  sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  remark TEXT,
+  FOREIGN KEY (package_id) REFERENCES packages(id),
+  FOREIGN KEY (recipient_user_id) REFERENCES users(id)
 );
 
 -- 索引
@@ -96,7 +117,12 @@ CREATE INDEX idx_packages_pickup_code ON packages(pickup_code);
 CREATE INDEX idx_packages_stored_at ON packages(stored_at);
 CREATE INDEX idx_packages_courier_id ON packages(courier_id);
 CREATE INDEX idx_packages_phone_suffix ON packages(phone_suffix);
+CREATE INDEX idx_packages_delivery_status ON packages(delivery_status);
 CREATE INDEX idx_notifications_user_id ON notifications(user_id, read);
+CREATE INDEX idx_notifications_package_id ON notifications(package_id);
+CREATE INDEX idx_notification_deliveries_package ON notification_deliveries(package_id);
+CREATE INDEX idx_notification_deliveries_type ON notification_deliveries(notification_type);
+CREATE INDEX idx_notification_deliveries_status ON notification_deliveries(status);
 CREATE INDEX idx_operation_logs_package_id ON operation_logs(package_id);
 CREATE INDEX idx_reservations_resident_id ON reservations(resident_id);
 

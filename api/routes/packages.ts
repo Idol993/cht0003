@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { requireCourierOrAdmin, requireAdmin } from '../middleware/permission';
+import { requireCourierOrAdmin, requireAdmin, requireResident } from '../middleware/permission';
 import {
   createPackage,
   batchImportPackages,
@@ -9,8 +9,12 @@ import {
   verifyPickup,
   markAsReturned,
   getPackageOperationLogs,
+  getReturnList,
+  processReturnBatch,
+  claimPackage,
 } from '../services/packageService';
-import { PackageCreateRequest, PackageBatchImportRequest, PickupVerifyRequest, PackageStatus } from '../../shared/types';
+import { getDeliveriesByPackageId } from '../services/notificationService';
+import { PackageCreateRequest, PackageBatchImportRequest, PickupVerifyRequest, PackageStatus, PackageReturnQueryParams, ReturnProcessRequest } from '../../shared/types';
 import { getCurrentUser } from '../services/authService';
 
 const router = Router();
@@ -120,6 +124,60 @@ router.get('/', async (req: AuthRequest, res) => {
   }
 });
 
+router.get('/returns', requireCourierOrAdmin, async (req: AuthRequest, res) => {
+  try {
+    const user = await getCurrentUser(req.user!.id);
+    
+    const { companyId, minOverdueDays, maxOverdueDays, zone } = req.query;
+    
+    const params: PackageReturnQueryParams = {
+      companyId: companyId ? parseInt(companyId as string) : undefined,
+      minOverdueDays: minOverdueDays !== undefined ? parseInt(minOverdueDays as string) : undefined,
+      maxOverdueDays: maxOverdueDays !== undefined ? parseInt(maxOverdueDays as string) : undefined,
+      zone: zone as string | undefined,
+    };
+
+    const packages = await getReturnList(params, user.role, user.companyId);
+
+    res.json({
+      success: true,
+      data: packages,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+router.post('/return/batch', requireCourierOrAdmin, async (req: AuthRequest, res) => {
+  try {
+    const user = await getCurrentUser(req.user!.id);
+    const body = req.body as ReturnProcessRequest;
+    
+    if (!body.packageIds || body.packageIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '请选择要退回的包裹',
+      });
+    }
+
+    const result = await processReturnBatch(body.packageIds, user.id, user.name, body.remark);
+
+    res.json({
+      success: true,
+      data: result,
+      message: `批量退回完成：成功${result.success}条，失败${result.failed}条`,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
 router.get('/:id', async (req: AuthRequest, res) => {
   try {
     const { id } = req.params;
@@ -154,6 +212,52 @@ router.get('/:id', async (req: AuthRequest, res) => {
     res.json({
       success: true,
       data: pkg,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+router.get('/:id/deliveries', async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params;
+    const packageId = parseInt(id);
+    
+    const user = await getCurrentUser(req.user!.id);
+    const pkg = await getPackageById(packageId);
+
+    if (!pkg) {
+      return res.status(404).json({
+        success: false,
+        message: '包裹不存在',
+      });
+    }
+
+    if (user.role === 'resident') {
+      const phoneSuffix = user.phone.slice(-4);
+      if (pkg.phoneSuffix !== phoneSuffix && pkg.residentId !== user.id) {
+        return res.status(403).json({
+          success: false,
+          message: '无权查看此包裹的投递记录',
+        });
+      }
+    } else if (user.role === 'courier') {
+      if (pkg.companyId !== user.companyId || pkg.courierId !== user.id) {
+        return res.status(403).json({
+          success: false,
+          message: '无权查看此包裹的投递记录',
+        });
+      }
+    }
+
+    const deliveries = await getDeliveriesByPackageId(packageId);
+
+    res.json({
+      success: true,
+      data: deliveries,
     });
   } catch (error: any) {
     res.status(400).json({
@@ -228,6 +332,7 @@ router.put('/:id/return', requireCourierOrAdmin, async (req: AuthRequest, res) =
   try {
     const { id } = req.params;
     const user = await getCurrentUser(req.user!.id);
+    const { remark } = req.body as { remark?: string };
     
     const pkg = await getPackageById(parseInt(id));
     if (!pkg) {
@@ -244,12 +349,55 @@ router.put('/:id/return', requireCourierOrAdmin, async (req: AuthRequest, res) =
       });
     }
 
-    const updatedPkg = await markAsReturned(parseInt(id), user.id, user.name);
+    const updatedPkg = await markAsReturned(parseInt(id), user.id, user.name, remark);
 
     res.json({
       success: true,
       data: updatedPkg,
       message: '包裹已标记为退回',
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+router.put('/:id/claim', requireResident, async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params;
+    const user = await getCurrentUser(req.user!.id);
+    
+    const pkg = await getPackageById(parseInt(id));
+    if (!pkg) {
+      return res.status(404).json({
+        success: false,
+        message: '包裹不存在',
+      });
+    }
+
+    if (pkg.deliveryStatus !== 'conflict') {
+      return res.status(400).json({
+        success: false,
+        message: '该包裹无需认领',
+      });
+    }
+
+    const phoneSuffix = user.phone.slice(-4);
+    if (pkg.phoneSuffix !== phoneSuffix) {
+      return res.status(403).json({
+        success: false,
+        message: '您无权认领此包裹',
+      });
+    }
+
+    const updatedPkg = await claimPackage(parseInt(id), user.id);
+
+    res.json({
+      success: true,
+      data: updatedPkg,
+      message: '包裹认领成功',
     });
   } catch (error: any) {
     res.status(400).json({

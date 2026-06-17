@@ -10,9 +10,13 @@ export type ReservationStatus = 'pending' | 'approved' | 'rejected' | 'completed
 
 export type ReservationSize = 'medium' | 'large' | 'xlarge';
 
-export type NotificationType = 'pickup' | 'reminder' | 'return' | 'reservation' | 'system';
+export type NotificationType = 'pickup' | 'reminder' | 'return' | 'reservation' | 'system' | 'claim';
 
 export type OperationAction = 'store' | 'pickup' | 'reminder' | 'return' | 'expire';
+
+export type DeliveryStatus = 'pending' | 'delivered' | 'conflict' | 'claimed';
+
+export type DeliveryStatusType = 'success' | 'blocked_conflict' | 'no_match' | 'failed';
 
 export interface User {
   id: number;
@@ -64,6 +68,9 @@ export interface Package {
   storageHours: number;
   isOverdue: boolean;
   overdueDays: number;
+  deliveryStatus: DeliveryStatus;
+  conflictCount: number;
+  matchedUserIds?: number[];
 }
 
 export interface Reservation {
@@ -91,8 +98,25 @@ export interface Notification {
   title: string;
   content: string;
   packageId?: number;
+  deliveryId?: number;
   read: boolean;
   createdAt: string;
+}
+
+export interface NotificationDelivery {
+  id: number;
+  packageId: number;
+  trackingNumber?: string;
+  notificationType: NotificationType;
+  status: DeliveryStatusType;
+  recipientUserId?: number;
+  recipientPhone?: string;
+  recipientName?: string;
+  matchedCount: number;
+  matchedUserIds?: number[];
+  sentAt: string;
+  remark?: string;
+  package?: Package;
 }
 
 export interface OperationLog {
@@ -167,6 +191,33 @@ export interface PackageBatchImportRequest {
 
 export interface PickupVerifyRequest {
   pickupCode: string;
+}
+
+export interface ReturnProcessRequest {
+  packageIds: number[];
+  remark?: string;
+}
+
+export interface NotificationQueryParams {
+  type?: NotificationType;
+  unreadOnly?: boolean;
+  limit?: number;
+}
+
+export interface DeliveryQueryParams {
+  packageId?: number;
+  notificationType?: NotificationType;
+  status?: DeliveryStatusType;
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface PackageReturnQueryParams {
+  companyId?: number;
+  minOverdueDays?: number;
+  maxOverdueDays?: number;
+  zone?: string;
+  status?: PackageStatus;
 }
 
 export interface ReservationCreateRequest {

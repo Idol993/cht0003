@@ -12,6 +12,8 @@ import {
   Home,
   MapPin,
   Mail,
+  RotateCcw,
+  MailCheck,
 } from 'lucide-react';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -39,7 +41,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const loadNotifications = async () => {
     try {
       const [list, unread] = await Promise.all([
-        notificationApi.getList(10),
+        notificationApi.getList({ limit: 10 }),
         notificationApi.getUnreadCount(),
       ]);
       setNotifications(list);
@@ -84,6 +86,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         ...baseMenu,
         { path: '/packages/storage', icon: Inbox, label: '入库管理' },
         { path: '/packages', icon: Package, label: '包裹查询' },
+        { path: '/packages/returns', icon: RotateCcw, label: '退回处理' },
         { path: '/lockers', icon: MapPin, label: '格口状态' },
         { path: '/notifications', icon: Mail, label: '消息通知' },
       ];
@@ -94,12 +97,14 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         ...baseMenu,
         { path: '/packages/storage', icon: Inbox, label: '入库管理' },
         { path: '/packages', icon: Package, label: '包裹管理' },
+        { path: '/packages/returns', icon: RotateCcw, label: '退回处理' },
         { path: '/pickup', icon: QrCode, label: '取件核验' },
         { path: '/reservations', icon: Calendar, label: '预约管理' },
         { path: '/lockers', icon: MapPin, label: '格口管理' },
         { path: '/statistics', icon: BarChart3, label: '数据统计' },
         { path: '/users', icon: Users, label: '用户管理' },
         { path: '/notifications', icon: Mail, label: '消息通知' },
+        { path: '/notifications/deliveries', icon: MailCheck, label: '投递记录' },
       ];
     }
 

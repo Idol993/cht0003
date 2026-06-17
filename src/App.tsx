@@ -20,6 +20,9 @@ import Lockers from './pages/Lockers';
 import Statistics from './pages/Statistics';
 import Users from './pages/Users';
 import Notifications from './pages/Notifications';
+import Returns from './pages/Returns';
+import PackageDetail from './pages/PackageDetail';
+import DeliveryLogs from './pages/DeliveryLogs';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -101,6 +104,24 @@ const AppContent: React.FC = () => {
       />
       
       <Route
+        path="/packages/returns"
+        element={
+          <ProtectedRoute allowedRoles={['courier', 'admin']}>
+            <Returns />
+          </ProtectedRoute>
+        }
+      />
+      
+      <Route
+        path="/packages/:id"
+        element={
+          <ProtectedRoute>
+            <PackageDetail />
+          </ProtectedRoute>
+        }
+      />
+      
+      <Route
         path="/packages"
         element={
           <ProtectedRoute>
@@ -150,6 +171,15 @@ const AppContent: React.FC = () => {
         element={
           <ProtectedRoute allowedRoles={['admin']}>
             <Users />
+          </ProtectedRoute>
+        }
+      />
+      
+      <Route
+        path="/notifications/deliveries"
+        element={
+          <ProtectedRoute allowedRoles={['admin']}>
+            <DeliveryLogs />
           </ProtectedRoute>
         }
       />
